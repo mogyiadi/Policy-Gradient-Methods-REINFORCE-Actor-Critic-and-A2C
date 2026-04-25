@@ -1,4 +1,4 @@
-from model import ActorCritic
+from AC_model import ActorCritic
 import gymnasium as gym
 import numpy as np
 import tensorflow as tf
@@ -38,7 +38,7 @@ def train_step(initial_state, env, model, optimizer, gamma=0.99):
         target_q = reward + gamma * next_q * (1.0 - float(done or truncated))
 
         # MSE between current q value and target q value
-        critic_loss = tf.math.square(target_q - current_q)
+        critic_loss = tf.math.square(tf.stop_gradient(target_q) - current_q)
 
         # Calculating the actor loss
         negative_log_prob = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=[action], logits=action_probs)

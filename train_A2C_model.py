@@ -32,7 +32,8 @@ def train_step(initial_state, env, model, optimizer, gamma=0.99):
         td_target = reward + gamma * next_value * (1.0 - float(terminal))
 
         # Advantage: A(s,a) = td_target - V(s)
-        advantage = td_target - current_value
+        # stop_gradient on td_target so the bootstrap target is treated as fixed
+        advantage = tf.stop_gradient(td_target) - current_value
 
         # Critic loss: MSE between V(s) and TD target
         critic_loss = tf.math.square(advantage)
