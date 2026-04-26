@@ -74,22 +74,23 @@ def run_episodes(env, model, optimizer, n_episodes):
     return rewards_list
 
 
-env = gym.make('CartPole-v1')
+if __name__ == '__main__':
+    env = gym.make('CartPole-v1')
 
-seed = 69
-tf.random.set_seed(seed)
-np.random.seed(seed)
+    seed = 69
+    tf.random.set_seed(seed)
+    np.random.seed(seed)
 
-num_actions = env.action_space.n
-num_hidden_units = 128
+    num_actions = env.action_space.n
+    num_hidden_units = 128
 
-model = ActorCritic(int(num_actions), num_hidden_units)
-optimizer = tf.keras.optimizers.Adam(learning_rate=0.0005)
+    model = ActorCritic(int(num_actions), num_hidden_units)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.0005)
 
-rewards_list = run_episodes(env, model, optimizer, 1000)
+    rewards_list = run_episodes(env, model, optimizer, 1000)
 
-plt.plot(np.arange(len(rewards_list)), rewards_list)
-plt.show()
+    plt.plot(np.arange(len(rewards_list)), rewards_list)
+    plt.show()
 
 
 
