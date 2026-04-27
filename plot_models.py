@@ -1,88 +1,68 @@
-import gymnasium as gym
+import pandas as pd
 import numpy as np
-import tensorflow as tf
 import matplotlib.pyplot as plt
 
-# Import the models
-from REINFORCE_model import ReinforceModel
-from AC_model import ActorCritic
-from A2C_model import AdvantageActorCritic
+pg = pd.read_csv('results_pg.csv')
+dqn = pd.read_csv('Deep-Q-learning/results_dqn.csv')
+baseline = pd.read_csv('Deep-Q-learning/BaselineDataCartPole.csv')
 
-# Import the training loops
-from train_REINFORCE import run_episodes as run_reinforce
-from train_AC_model import run_episodes as run_ac
-from train_A2C_model import run_episodes as run_a2c
+# common step grid shared by all methods
+step_grid = np.arange(0, 1_000_001, 5000)
 
 
-def smooth_curve(scalars, weight=0.85):
-    last = scalars[0]
-    smoothed = []
-    for point in scalars:
-        smoothed_val = last * weight + (1 - weight) * point
-        smoothed.append(smoothed_val)
-        last = smoothed_val
-    return smoothed
+def get_mean_std(df, config):
+    # interpolate each seed's (step, score) curve onto the common grid
+    seed_curves = []
+    for _, group in df[df['Config'] == config].groupby('Seed'):
+        steps = group['Step'].values.astype(float)
+        scores = group['Score'].values
+        interp = np.interp(step_grid, steps, scores)
+        # mask steps beyond this seed's data range with NaN
+        interp[step_grid > steps[-1]] = np.nan
+        seed_curves.append(interp)
+    arr = np.array(seed_curves)
+    return np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
 
 
-def main():
-    env = gym.make('CartPole-v1')
+fig, ax = plt.subplots(figsize=(12, 6))
 
-    # Common hyperparameters
-    seed = 69
-    tf.random.set_seed(seed)
-    np.random.seed(seed)
-    num_actions = int(env.action_space.n)
-    num_hidden_units = 128
-    learning_rate = 0.0005
-    n_episodes = 1000
+# DQN configurations (dashed, thinner)
+dqn_labels = {
+    'naive':   'DQN Naive',
+    'only_tn': 'DQN Target Network',
+    'only_er': 'DQN Experience Replay',
+    'tn_er':   'DQN TN + ER',
+}
+for config in ['naive', 'only_tn', 'only_er', 'tn_er']:
+    mean, std = get_mean_std(dqn, config)
+    smooth = pd.Series(mean).rolling(5, center=True).mean()
+    line, = ax.plot(step_grid, smooth, label=dqn_labels[config], linewidth=1.5, linestyle='--')
+    ax.fill_between(step_grid, (mean - std).clip(0, 500), (mean + std).clip(0, 500),
+                    alpha=0.1, color=line.get_color())
 
-    # REINFORCE
-    print("Training REINFORCE")
-    model_reinforce = ReinforceModel(num_actions, num_hidden_units)
-    opt_reinforce = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-    rewards_reinforce = run_reinforce(env, model_reinforce, opt_reinforce, n_episodes)
-    steps_reinforce = np.cumsum(rewards_reinforce)
+# Policy gradient methods (solid, thicker)
+pg_colors = {'REINFORCE': 'royalblue', 'AC': 'darkorange', 'A2C': 'forestgreen'}
+pg_labels = {'REINFORCE': 'REINFORCE', 'AC': 'Actor-Critic (AC)', 'A2C': 'Advantage AC (A2C)'}
+for config in ['REINFORCE', 'AC', 'A2C']:
+    mean, std = get_mean_std(pg, config)
+    smooth = pd.Series(mean).rolling(5, center=True).mean()
+    line, = ax.plot(step_grid, smooth, label=pg_labels[config],
+                    linewidth=2.5, color=pg_colors[config])
+    ax.fill_between(step_grid, (mean - std).clip(0, 500), (mean + std).clip(0, 500),
+                    alpha=0.15, color=line.get_color())
 
-    # np.save('data_reinforce_rewards.npy', rewards_reinforce)
-    # np.save('data_reinforce_steps.npy', steps_reinforce)
+# provided baseline
+baseline_mean = baseline.groupby('env_step')['Episode_Return_smooth'].mean()
+ax.plot(baseline_mean.index, baseline_mean.values,
+        label='Provided Baseline', color='black', linestyle=':', linewidth=2)
 
-    # AC
-    print("Training AC")
-    model_ac = ActorCritic(num_actions, num_hidden_units)
-    opt_ac = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-    rewards_ac = run_ac(env, model_ac, opt_ac, n_episodes)
-    steps_ac = np.cumsum(rewards_ac)
-
-    # np.save('data_ac_rewards.npy', rewards_ac)
-    # np.save('data_ac_steps.npy', steps_ac)
-
-    # A2C
-    print("Training A2C")
-    model_a2c = AdvantageActorCritic(num_actions, num_hidden_units)
-    opt_a2c = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-    rewards_a2c = run_a2c(env, model_a2c, opt_a2c, n_episodes)
-    steps_a2c = np.cumsum(rewards_a2c)
-
-    # np.save('data_a2c_rewards.npy', rewards_a2c)
-    # np.save('data_a2c_steps.npy', steps_a2c)
-
-    print("Training complete")
-
-    # PLOT
-    plt.figure(figsize=(12, 7))
-
-    plt.plot(steps_reinforce, smooth_curve(rewards_reinforce), label='REINFORCE', color='blue', alpha=0.8)
-    plt.plot(steps_ac, smooth_curve(rewards_ac), label='Actor-Critic (AC)', color='orange', alpha=0.8)
-    plt.plot(steps_a2c, smooth_curve(rewards_a2c), label='Advantage Actor-Critic (A2C)', color='green', alpha=0.8)
-
-    plt.xlabel('Environment Steps')
-    plt.ylabel('Episode Return')
-    plt.title('Learning Curves: Policy Gradient Methods vs Steps')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-
-if __name__ == '__main__':
-    main()
+ax.set_xlabel('Environment Steps', fontsize=12)
+ax.set_ylabel('Mean Return', fontsize=12)
+ax.set_title('Learning Curves: Policy Gradient Methods vs DQN', fontsize=13)
+ax.set_ylim(0, 520)
+ax.legend(fontsize=9, ncol=2)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('learning_curves_all.png', dpi=150)
+plt.show()
+print("Saved to learning_curves_all.png")

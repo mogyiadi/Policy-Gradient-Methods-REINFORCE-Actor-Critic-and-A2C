@@ -6,71 +6,68 @@ import matplotlib.pyplot as plt
 import tqdm
 
 
-def train_step(initial_state, env, model, optimizer, gamma=0.99):
-    state_tensor = tf.convert_to_tensor([initial_state], dtype=tf.float32)
+def train_episode(env, model, optimizer, gamma=0.99):
+    states, actions, rewards, next_states, terminals = [], [], [], [], []
+    state, _ = env.reset()
+    done = False
 
+    # collect full episode without tape — avoids memory accumulation from per-step tapes
+    while not done:
+        state_tensor = tf.convert_to_tensor([state], dtype=tf.float32)
+        action_logits, _ = model(state_tensor)
+        action = int(tf.random.categorical(action_logits, 1)[0, 0].numpy())
+        next_state, reward, terminated, truncated, _ = env.step(action)
+        terminal = terminated or truncated
+        states.append(state)
+        actions.append(action)
+        rewards.append(reward)
+        next_states.append(next_state)
+        terminals.append(float(terminal))
+        state = next_state
+        done = terminal
+
+    T = len(states)
+    states_t = tf.constant(states, dtype=tf.float32)
+    next_states_t = tf.constant(next_states, dtype=tf.float32)
+    actions_t = tf.constant(actions, dtype=tf.int32)
+    rewards_t = tf.constant(rewards, dtype=tf.float32)
+    terminals_t = tf.constant(terminals, dtype=tf.float32)
+
+    # SARSA: sample next actions from current policy (on-policy TD target)
+    next_logits, next_q_vals = model(next_states_t)
+    next_actions = tf.cast(tf.squeeze(tf.random.categorical(next_logits, 1), axis=1), tf.int32)
+    next_q = tf.gather_nd(next_q_vals, tf.stack([tf.range(T), next_actions], axis=1))
+    sarsa_targets = tf.stop_gradient(rewards_t + gamma * next_q * (1.0 - terminals_t))
+
+    # single batch update inside one tape
     with tf.GradientTape() as tape:
-        # Get action probs from current state
-        action_probs, q_values = model(state_tensor)
+        action_logits, q_vals = model(states_t)
+        current_q = tf.gather_nd(q_vals, tf.stack([tf.range(T), actions_t], axis=1))
 
-        # Sample an action from the action probabilities
-        action_tensor = tf.random.categorical(action_probs, 1)[0, 0]
-        action = int(action_tensor.numpy())
+        # critic loss: MSE between Q(s,a) and SARSA TD target
+        critic_loss = tf.reduce_mean(tf.math.square(sarsa_targets - current_q))
 
-        # Get the Q-value for the selected action
-        current_q = q_values[0, action]
-
-        # Take a step in the actual environment
-        next_state, reward, done, truncated, _ = env.step(action)
-
-        # Get action probs for the next state
-        next_state_tensor = tf.convert_to_tensor([next_state], dtype=tf.float32)
-        next_action_probs, next_q_values = model(next_state_tensor)
-
-        # Sample the potential next action the agent would take
-        next_action_tensor = tf.random.categorical(next_action_probs, 1)[0, 0]
-        next_action = int(next_action_tensor.numpy())
-
-        # Get its q value
-        next_q = next_q_values[0, next_action]
-
-        # Calculate the temporal difference error
-        target_q = reward + gamma * next_q * (1.0 - float(done or truncated))
-
-        # MSE between current q value and target q value
-        critic_loss = tf.math.square(tf.stop_gradient(target_q) - current_q)
-
-        # Calculating the actor loss
-        negative_log_prob = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=[action], logits=action_probs)
-
-        # Estimate the advantage
-        # Need to stop the gradients flowing to the critic's weights
-        actor_loss = negative_log_prob * tf.stop_gradient(current_q)
+        # actor loss: L(θ) = E[-Q_φ(s,a)] as per the assignment
+        neg_log_probs = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=actions_t, logits=action_logits)
+        actor_loss = tf.reduce_mean(neg_log_probs * tf.stop_gradient(current_q))
 
         total_loss = critic_loss + actor_loss
 
-    # Update model weights
-    gradients = tape.gradient(total_loss, model.trainable_variables)
-    clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
-    optimizer.apply_gradients(zip(clipped_gradients, model.trainable_variables))
+    grads = tape.gradient(total_loss, model.trainable_variables)
+    clipped, _ = tf.clip_by_global_norm(grads, 1.0)
+    optimizer.apply_gradients(zip(clipped, model.trainable_variables))
 
-    return next_state, reward, done or truncated
+    return sum(rewards)
 
 
 def run_episodes(env, model, optimizer, n_episodes):
     rewards_list = []
-    for _ in range(n_episodes):
-        state, info = env.reset()
-
-        done = False
-        rewards = 0
-
-        while not done:
-            state, reward, done = train_step(state, env, model, optimizer)
-            rewards += reward
-
-        rewards_list.append(rewards)
-
+    for ep in range(n_episodes):
+        rewards_list.append(train_episode(env, model, optimizer))
+        if (ep + 1) % 100 == 0:
+            recent = np.mean(rewards_list[-100:])
+            print(f"  episode {ep + 1}/{n_episodes}  avg return (last 100): {recent:.1f}")
     return rewards_list
 
 

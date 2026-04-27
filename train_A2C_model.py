@@ -5,70 +5,70 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 
 
-def train_step(initial_state, env, model, optimizer, gamma=0.99):
-    state_tensor = tf.convert_to_tensor([initial_state], dtype=tf.float32)
+def train_episode(env, model, optimizer, gamma=0.99):
+    states, actions, rewards = [], [], []
+    state, _ = env.reset()
+    done = False
 
+    # collect full episode without tape — same collection strategy as REINFORCE
+    while not done:
+        state_tensor = tf.convert_to_tensor([state], dtype=tf.float32)
+        action_logits, _ = model(state_tensor)
+        action = int(tf.random.categorical(action_logits, 1)[0, 0].numpy())
+        next_state, reward, terminated, truncated, _ = env.step(action)
+        states.append(state)
+        actions.append(action)
+        rewards.append(reward)
+        state = next_state
+        done = terminated or truncated
+
+    # MC returns G_t: same estimate REINFORCE uses for Q^π
+    G = 0
+    returns = []
+    for r in reversed(rewards):
+        G = r + gamma * G
+        returns.append(G)
+    returns.reverse()
+    returns_tensor = tf.constant(returns, dtype=tf.float32)
+
+    # single batch update over the full episode
     with tf.GradientTape() as tape:
-        # Get action logits and V(s) from current state
-        action_probs, value = model(state_tensor)
+        states_tensor = tf.constant(states, dtype=tf.float32)
+        action_logits, values = model(states_tensor)
+        # squeeze critic output from (T, 1) to (T,)
+        values = tf.squeeze(values, axis=1)
 
-        # V(s) is shape (1, 1) — squeeze to scalar
-        current_value = value[0, 0]
+        # advantage A(s,a) = G_t - V(s_t): how much better was this return than expected
+        advantages = tf.stop_gradient(returns_tensor) - values
 
-        # Sample an action from the action probabilities
-        action_tensor = tf.random.categorical(action_probs, 1)[0, 0]
-        action = int(action_tensor.numpy())
+        # critic loss: push V(s) toward the MC return
+        critic_loss = tf.reduce_mean(tf.math.square(advantages))
 
-        # Take a step in the actual environment
-        next_state, reward, done, truncated, _ = env.step(action)
-        terminal = done or truncated
-
-        # Get V(s') for the next state
-        next_state_tensor = tf.convert_to_tensor([next_state], dtype=tf.float32)
-        _, next_value = model(next_state_tensor)
-        next_value = next_value[0, 0]
-
-        # TD target: r + γV(s'), zero if terminal
-        td_target = reward + gamma * next_value * (1.0 - float(terminal))
-
-        # Advantage: A(s,a) = td_target - V(s)
-        # stop_gradient on td_target so the bootstrap target is treated as fixed
-        advantage = tf.stop_gradient(td_target) - current_value
-
-        # Critic loss: MSE between V(s) and TD target
-        critic_loss = tf.math.square(advantage)
-
-        # Actor loss: -log π(a|s) * A(s,a), stop gradients through advantage
-        negative_log_prob = tf.nn.sparse_softmax_cross_entropy_with_logits(
-            labels=[action], logits=action_probs
+        # actor loss: -log π(a|s) * A(s,a)
+        neg_log_probs = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=tf.constant(actions, dtype=tf.int32),
+            logits=action_logits
         )
-        actor_loss = negative_log_prob * tf.stop_gradient(advantage)
+        actor_loss = tf.reduce_mean(neg_log_probs * tf.stop_gradient(advantages))
 
         total_loss = critic_loss + actor_loss
 
-    # Update model weights
-    gradients = tape.gradient(total_loss, model.trainable_variables)
-    clipped_gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
-    optimizer.apply_gradients(zip(clipped_gradients, model.trainable_variables))
+    grads = tape.gradient(total_loss, model.trainable_variables)
+    clipped, _ = tf.clip_by_global_norm(grads, 1.0)
+    optimizer.apply_gradients(zip(clipped, model.trainable_variables))
 
-    return next_state, reward, terminal
+    return sum(rewards)
 
 
 def run_episodes(env, model, optimizer, n_episodes):
     rewards_list = []
-    for _ in range(n_episodes):
-        state, info = env.reset()
-
-        done = False
-        rewards = 0
-
-        while not done:
-            state, reward, done = train_step(state, env, model, optimizer)
-            rewards += reward
-
-        rewards_list.append(rewards)
-
+    for ep in range(n_episodes):
+        rewards_list.append(train_episode(env, model, optimizer))
+        if (ep + 1) % 100 == 0:
+            recent = np.mean(rewards_list[-100:])
+            print(f"  episode {ep + 1}/{n_episodes}  avg return (last 100): {recent:.1f}")
     return rewards_list
+
 
 if __name__ == '__main__':
     env = gym.make('CartPole-v1')
@@ -77,13 +77,17 @@ if __name__ == '__main__':
     tf.random.set_seed(seed)
     np.random.seed(seed)
 
-    num_actions = env.action_space.n
+    num_actions = int(env.action_space.n)
     num_hidden_units = 128
 
-    model = AdvantageActorCritic(int(num_actions), num_hidden_units)
+    model = AdvantageActorCritic(num_actions, num_hidden_units)
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.0005)
 
     rewards_list = run_episodes(env, model, optimizer, 1000)
 
     plt.plot(np.arange(len(rewards_list)), rewards_list)
+    plt.xlabel('Episode')
+    plt.ylabel('Return')
+    plt.title('A2C on CartPole-v1')
+    plt.grid(True, alpha=0.3)
     plt.show()

@@ -11,6 +11,7 @@ class ActorCritic(tf.keras.Model):
         self.actor = layers.Dense(num_actions)
 
         self.critic_dense = layers.Dense(num_hidden_units, activation='relu')
+        # Q(s,a): one Q-value per action, approximating Q^π
         self.critic = layers.Dense(num_actions)
 
     def call(self, inputs):

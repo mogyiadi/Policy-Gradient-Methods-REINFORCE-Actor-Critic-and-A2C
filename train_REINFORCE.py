@@ -23,49 +23,31 @@ def train_episode(env, model, optimizer, gamma=0.99):
     state, _ = env.reset()
     done = False
 
-    # Generate episode
+    # collect the episode without a tape — we only need logits for sampling,
+    # not for gradients, so tracking them would just waste memory
+    while not done:
+        state_tensor = tf.convert_to_tensor([state], dtype=tf.float32)
+        action_logits = model(state_tensor)
+        action = int(tf.random.categorical(action_logits, 1)[0, 0].numpy())
+        next_state, reward, done, truncated, _ = env.step(action)
+        done = done or truncated
+        states.append(state)
+        actions.append(action)
+        rewards.append(reward)
+        state = next_state
+
+    # calculate monte carlo returns
+    returns = get_discounted_returns(rewards, gamma)
+    returns_tensor = tf.constant(returns, dtype=tf.float32)
+
+    # single batch forward pass inside the tape for the loss
     with tf.GradientTape() as tape:
-        while not done:
-            # Get action probabilities
-            state_tensor = tf.convert_to_tensor([state], dtype=tf.float32)
-            action_logits = model(state_tensor)
-
-            # Sample an action
-            action_tensor = tf.random.categorical(action_logits, 1)[0, 0]
-            action = int(action_tensor.numpy())
-
-            # Take step
-            next_state, reward, done, truncated, _ = env.step(action)
-            done = done or truncated
-
-            # Store experience
-            states.append(state)
-            actions.append(action)
-            rewards.append(reward)
-
-            state = next_state
-
-        # Calculate mote carlo returns
-        returns = get_discounted_returns(rewards, gamma)
-
-        # Convert lists to tensors for loss calculation
-        states_tensor = tf.convert_to_tensor(states, dtype=tf.float32)
-        actions_tensor = tf.convert_to_tensor(actions, dtype=tf.int32)
-        returns_tensor = tf.convert_to_tensor(returns, dtype=tf.float32)
-
-        # Calculate Loss
-        # Get logits for all states visited in the episode
-        all_logits = model(states_tensor)
-
-        # Calculate the negative log probability: -log(pi(a|s))
+        all_logits = model(tf.constant(states, dtype=tf.float32))
         negative_log_probs = tf.nn.sparse_softmax_cross_entropy_with_logits(
-            labels=actions_tensor, logits=all_logits)
-
-        # Multiply by the Monte Carlo estimate (the return G_t)
-        # This matches the assignment formula: expected value of [-Q * log_prob]
+            labels=tf.constant(actions, dtype=tf.int32), logits=all_logits)
         loss = tf.reduce_sum(negative_log_probs * returns_tensor)
 
-    # Update weights
+    # update weights
     gradients = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
 
@@ -74,13 +56,11 @@ def train_episode(env, model, optimizer, gamma=0.99):
 
 def run_episodes(env, model, optimizer, n_episodes):
     rewards_list = []
-    for episode in range(n_episodes):
-        total_reward = train_episode(env, model, optimizer)
-        rewards_list.append(total_reward)
-
-        if episode % 50 == 0:
-            print(f"Episode {episode}: Total Reward = {total_reward}")
-
+    for ep in range(n_episodes):
+        rewards_list.append(train_episode(env, model, optimizer))
+        if (ep + 1) % 100 == 0:
+            recent = np.mean(rewards_list[-100:])
+            print(f"  episode {ep + 1}/{n_episodes}  avg return (last 100): {recent:.1f}")
     return rewards_list
 
 
