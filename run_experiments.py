@@ -15,14 +15,17 @@ n_episodes = 800
 num_hidden_units = 128
 
 configs = [
+    ('AC',        ActorCritic,           run_ac,        0.0025),
+    ('A2C',       AdvantageActorCritic,  run_a2c,       0.0025),
     ('REINFORCE', ReinforceModel,        run_reinforce, 0.0025),
 ]
 
 env = gym.make('CartPole-v1')
 num_actions = int(env.action_space.n)
 
-with open('results_pg.csv', 'a', newline='') as f:
+with open('results_pg.csv', 'w', newline='') as f:
     writer = csv.writer(f)
+    writer.writerow(['Config', 'Seed', 'Step', 'Score'])
 
     for config_name, ModelClass, run_fn, lr in configs:
         for seed in seeds:
